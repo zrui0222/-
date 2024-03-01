@@ -120,15 +120,10 @@ def channel_visualization(image):
 #训练模块
 class train(nn.Module):
     def __init__(self,
-                 envir,
                  file_path_train,
-                 file_path_val,
                  file_path_test,
                  epochs,
                  encoded_dim,
-                 learning_rate,
-                 lr_decay_freq,
-                 lr_decay,
                  print_freq,
                  device,
                  encoder=None,
@@ -137,30 +132,12 @@ class train(nn.Module):
         super().__init__()
         self.epochs = epochs
         self.encoded_dim = encoded_dim
-        self.learning_rate = learning_rate
-        self.lr_decay_freq = lr_decay_freq
-        self.lr_decay = lr_decay
         self.print_freq = print_freq
         
 
         #### 1.load data ####        
         #数据加载        
-        if envir == 'indoor':
-            self.train_loader = scio.loadmat(file_path_train) ['HT'] # array 'data/DATA_Htrainin.mat'
-            self.val_loader = scio.loadmat(file_path_val)['HT'] #'data/DATA_Hvalin.mat'
-            self.test_loader = scio.loadmat(file_path_test)['HT']  #'data/DATA_Htestin.mat'
-
-        elif envir == 'outdoor':
-            self.train_loader = scio.loadmat(file_path_train) ['HT'] # array 'data/DATA_Htrainout.mat'
-            self.val_loader = scio.loadmat(file_path_val)['HT'] #'data/DATA_Hvalout.mat'
-            self.test_loader = scio.loadmat(file_path_test)['HT']  #'data/DATA_Htestout.mat'
-
-        self.train_loader  = self.train_loader .astype('float32')
-        self.val_loader = self.val_loader.astype('float32')
-        self.test_loader = self.test_loader('float32')
-        self.train_loader  = np.reshape(self.train_loader , (len(self.train_loader ), 2, 32, 32))  
-        self.val_loader  = np.reshape(self.val_loader , (len(self.val_loader ), 2, 32, 32)) 
-        self.test_loader  = np.reshape(self.test_loader , (len(self.test_loader ), 2, 32, 32)) 
+        self.train_loader,self.test_loader= load_data(file_path_train,file_path_test)
        
         self.encoder_ue = Encoder(encoded_dim).to(device)
         self.decoder_bs = Decoder(encoded_dim).to(device)
@@ -235,9 +212,10 @@ class train(nn.Module):
 
         self.encoder_ue.train()
         self.decoder_bs.train()
-
+        
         #### 2. train_epoch ####
         for epoch in range(self.epochs):
+            
 
 #             __________                           __________
 #             |         \                         /         |
@@ -249,24 +227,31 @@ class train(nn.Module):
 #   |                                                                               ^
 #   |_______________________________________________________________________________|
 
+            
             for i, input in enumerate(self.train_loader):
                 input = input.cuda()
                 codeword = self.encoder_ue(input)
                 output = self.decoder_bs(codeword)
 
                 loss = self.criterion(output, input)
+                
+                self.optimizer_ue.zero_grad()
+                self.optimizer_bs.zero_grad()
+                
                 loss.backward()
                 
-                self.untuned_lr = cf.cosine_decay(0.01, epoch, self.epochs)
-                self.tb_scheduler_ue.step(self.optimizer_ue, self.untuned_lr)
-                self.tb_scheduler_bs.step(self.optimizer_bs, self.untuned_lr)
-                self.tb_scheduler_ad.step(self.optimizer_ad, self.untuned_lr)
+                self.optimizer_ue.step()
+                self.optimizer_bs.step()
                 
 
                 if i % self.print_freq == 0:
                     print('Epoch: [{0}][{1}/{2}]\t'
                           'Loss {loss:.4f}\t'.format(
                         epoch, i, len(self.train_loader), loss=loss.item()))
+                    
+            self.untuned_lr = cf.cosine_decay(0.01, epoch, self.epochs)
+            self.tb_scheduler_ue.step(self.optimizer_ue, self.untuned_lr)
+            self.tb_scheduler_bs.step(self.optimizer_bs, self.untuned_lr)
 
             #### 3. validate ####
         self.encoder_ue.eval()
@@ -323,17 +308,24 @@ class train(nn.Module):
                 estimated_codeword = self.encoder_ue(output_additional)
 
                 loss = self.criterion(estimated_codeword, codeword) + 0.5 * self.criterion(output_additional, output)
-                loss.backward()
                 
+                self.optimizer_bs.zero_grad()
+                self.optimizer_ad.zero_grad()
                 
-                self.untuned_lr = cf.cosine_decay(0.01, epoch, self.epochs)
-                self.tb_scheduler_bs.step(self.optimizer_bs, self.untuned_lr)
-                self.tb_scheduler_ad.step(self.optimizer_ad, self.untuned_lr)
+                loss.backward()                                
+                
+                self.optimizer_bs.step()
+                self.optimizer_ad.step()
+                
 
                 if i % self.print_freq == 0:
                     print('Epoch: [{0}][{1}/{2}]\t'
                           'Loss {loss:.4f}\t'.format(
                         epoch, i, len(self.train_loader), loss=loss.item()))
+                    
+            self.untuned_lr = cf.cosine_decay(0.01, epoch, self.epochs)
+            self.tb_scheduler_bs.step(self.optimizer_bs, self.untuned_lr)
+            self.tb_scheduler_ad.step(self.optimizer_ad, self.untuned_lr)
 
             #### 3. validate ####
         self.encoder_ue.eval()
